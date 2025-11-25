@@ -1,0 +1,187 @@
+import cv2
+import numpy as np
+
+
+#차선을 분리하고 하나의 대표 선으로 만드는 함수
+def average_slope_intercept(lines):
+    #선이 없으면 None 반환
+    if lines is None:
+        return None
+    
+    left_fit = []   #왼쪽 차선 (기울기: 음수)의 좌표들을 저장
+    right_fit = []  #오른쪽 차선 (기울기: 양수)의 좌표들을 저장
+
+    for line in lines:
+        for x1, y1, x2, y2 in line:
+            #기울기 계산: (y2 - y1) / (x2 - x1). 분모가 0이면 계산 불가
+            if x2 == x1:
+                continue
+            
+            slope = (y2 - y1) / (x2 - x1)
+            #y 절편 계산: y = mx + b  ->  b = y - mx
+            intercept = y1 - slope * x1
+
+            #기울기 임계값 설정: 차선은 너무 평평하거나 너무 수직이어서는 안 됨
+            if abs(slope) < 0.4 or abs(slope) > 0.8: 
+                continue
+
+            #기울기를 기준으로 왼쪽/오른쪽 차선 분리
+            if slope < 0:  # 음수 기울기: 왼쪽 차선
+                left_fit.append((slope, intercept))
+            elif slope > 0: # 양수 기울기: 오른쪽 차선
+                right_fit.append((slope, intercept))
+
+    #왼쪽/오른쪽 각각의 기울기와 y절편을 평균 냄 (잡음 제거 및 하나의 선으로 통합)
+    #리스트가 비어있을 경우 평균을 내지 않고 None 반환하여 오류 방지
+    left_fit_average = np.average(left_fit, axis=0) if left_fit else None
+    right_fit_average = np.average(right_fit, axis=0) if right_fit else None
+
+    #평균낸 기울기와 y절편을 이용하여 시작점과 끝점 좌표를 계산
+    left_line = make_coordinates(left_fit_average)
+    right_line = make_coordinates(right_fit_average)
+    
+    #유효한 차선만 리스트에 담아 반환
+    lines_to_draw = []
+    # make_coordinates에서 차선이 없으면 [0, 0, 0, 0]을 반환하므로 이를 체크
+    if not np.array_equal(left_line, [0, 0, 0, 0]):
+        lines_to_draw.append(left_line)
+    if not np.array_equal(right_line, [0, 0, 0, 0]):
+        lines_to_draw.append(right_line)
+        
+    return np.array(lines_to_draw) if lines_to_draw else None
+
+
+#기울기와 y절편으로부터 (x1, y1, x2, y2) 좌표를 계산하는 함수
+def make_coordinates(line_parameters):
+    #line_parameters가 None이거나 np.nan이 포함된 경우 처리 (TypeError 방지)
+    if line_parameters is None or np.any(np.isnan(line_parameters)):
+        return np.array([0, 0, 0, 0])
+        
+    slope, intercept = line_parameters
+    
+    #y1, y2 값 고정: 차선이 그려질 높이 범위 설정 (480x640 기준)
+    #y1: 이미지 맨 아래 (480)
+    y1 = 480 
+    #y2: 이미지 중간 (300)까지 차선을 그림
+    y2 = 300  
+
+    #x 좌표 계산: x = (y - b) / m
+    #기울기가 0에 가까울 때 발생하는 ZeroDivisionError 처리 추가
+    try:
+        x1 = int((y1 - intercept) / slope)
+        x2 = int((y2 - intercept) / slope)
+    except ZeroDivisionError:
+        return np.array([0, 0, 0, 0])
+    
+    return np.array([x1, y1, x2, y2])
+
+#메인 루프에서 호출하는 draw_lines 함수 정의
+def draw_lines(img, lines, color=[0, 255, 0], thickness=10):
+    # 선이 없으면 원본 이미지 복사본 반환
+    if lines is None: return np.copy(img) 
+    img_copy = np.copy(img)
+    
+    # lines는 이미 대표 선 2개만 가지고 있음
+    for line in lines:
+        if len(line) == 4:
+            x1, y1, x2, y2 = line
+            cv2.line(img_copy, (x1, y1), (x2, y2), color, thickness)
+        
+    return img_copy
+
+# 주석에 명시된 draw_lines_with_offset 함수는 사용하지 않으므로 그대로 유지
+def draw_lines_with_offset(img, lines, y_offset, color=[0, 255, 0], thickness=5):
+    #잘린 이미지(ROI) 좌표를 원본 이미지 좌표로 변환하여 선을 그리는 기능
+    if lines is None:
+        return
+    
+    #원본 이미지 복사
+    img_copy = np.copy(img)
+    
+    for line in lines:
+        for x1, y1, x2, y2 in line:
+            #잘라낸 이미지(ROI)에서 찾은 좌표
+            #원본 위치에 맞게 y_offset(잘라낸 시작 높이)을 더해줘야 함
+            real_y1 = y1 + y_offset
+            real_y2 = y2 + y_offset
+            
+            cv2.line(img_copy, (x1, real_y1), (x2, real_y2), color, thickness)
+            
+    return img_copy
+
+#메인 실행 코드
+
+#1. 카메라 연결 (0:외장 카메라, 2: 내장 카메라)
+cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        print("프레임을 읽을 수 없습니다.") 
+        break
+
+    #연산 속도 향상을 위해 이미지 크기를 (640, 480)으로 고정
+    frame = cv2.resize(frame, (640, 480))
+    height, width = frame.shape[:2]
+    frame = cv2.convertScaleAbs(frame, alpha=1.0, beta=-50)
+    #1단계: 그레이스케일 변환
+    #컬러 정보는 불필요하므로 1채널로 변환해 연산 속도 확보
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    #2단계: ROI 슬라이싱(관심 영역 자르기)
+    #하늘/배경 등 불필요한 영역을 날리고 도로가 있는 하단부만 잘라냄
+    #이미지의 아래쪽 절반만 잘라냄(사각형 영역)
+    #gray[y_start:y_end, x_start:x_end]
+    roi_y_start = height // 2  #높이의 절반부터
+    roi_y_end = height         #끝까지
+    
+    #실제 잘라낸 이미지
+    roi_gray = gray[roi_y_start:roi_y_end, 0:width]
+
+   
+    #3단계: 가우시안 블러
+    #커널(20x20)로 이미지를 흐리게 하여 자잘한 노이즈(아스팔트 질감 등) 제거
+    #잘라낸 이미지(roi_gray)에만 적용하므로 속도가 더 빠름
+    #커널 사이즈를 9x9로 통일 
+    blur = cv2.GaussianBlur(roi_gray, (20, 20), 0)
+
+    #4단계: 캐니 엣지 검출
+    #20(Min)~60(Max) 이중 임계값을 사용하여 뚜렷하고 끊김 없는 경계선 검출
+    edges = cv2.Canny(blur, 20, 60)
+
+    #5단계: 확률적 허프 변환
+    #엣지 점들을 연결해 직선 성분 추출 (직선 최소 길이 20, 점 사이 최대 간격 10)
+    lines = cv2.HoughLinesP(edges, 
+                            rho=1,              
+                            theta=np.pi/180,    
+                            threshold=40,       
+                            minLineLength=20,   
+                            maxLineGap=10)     
+    
+    #6단계: 필터링 및 평균화
+    #찾은 모든 선을 왼쪽/오른쪽 차선으로 분리하고 하나의 선으로 통합
+    #이 함수를 통과하면 lines는 단 두 줄의 대표 차선만 가지게 됨
+    averaged_lines = average_slope_intercept(lines)
+
+    #7단계: 결과 합성
+    #평균화된 선(averaged_lines)을 원본 이미지 위에 겹쳐서 출력
+    line_image = draw_lines(frame, averaged_lines)
+    
+    #원본(0.8)과 선 이미지(1.0)를 합성하여 최종 결과 생성
+    #draw_lines 함수가 선이 없으면 원본 복사본을 반환하므로 result 계산이 안정적
+    result = cv2.addWeighted(frame, 0.8, line_image, 1.0, 0) 
+    
+    edges_display = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    cv2.imshow('Lane Detection Result', result)
+    cv2.imshow('ROI Edges (Sliced)', edges_display) # 엣지 이미지 대신 변환된 이미지 출력
+
+    #a키 입력 시 프로그램 종료 
+    if cv2.waitKey(1) & 0xFF == ord('a'):
+        break
+
+#카메라 장치 해제 및 모든 창 닫기
+cap.release() 
+cv2.destroyAllWindows()
