@@ -18,12 +18,11 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 last_steering = 0.0  # 차선을 놓쳤을 때 직전 값을 기억하기 위한 변수
-# 최대 조향각 유지 (곡선 과도 조향 방지)
-MAX_STEERING = 0.45
+MAX_STEERING = 0.45  # 최대 조향각 유지
 
-# [최종 수정] 직선 쏠림 보정 하향 (0.40 -> 0.35): 오른쪽 쏠림 완화 및 중앙 주행 유도
-# 목표: 차량을 중앙으로 이동시키기 위해 과도한 우측 보정을 줄임
-STEERING_OFFSET = 0.35
+# [중요 수정] 직선 쏠림 보정 추가 하향 (0.35 -> 0.25): 우측 쏠림을 확실히 해소하고 중앙 주행 유도
+# 만약 0.20~0.25 사이에서 왼쪽으로 쏠린다면 장치 자체의 기계적 쏠림이 큽니다.
+STEERING_OFFSET = 0.25
 
 # 차선 손실 대비를 위한 직전 프레임 라인 정보 저장
 last_r_m, last_r_b = [], []
@@ -47,18 +46,21 @@ while cap.isOpened():
     CENTER_X = width // 2  # 320
     
     # ROI 설정 (하단 절반)
-    roi_y_start = height // 2  
+    # [수정] ROI 높이를 조금 더 넓게 설정 (차선 인식 범위 확대)
+    roi_y_start = int(height * 0.45) # 480 * 0.45 = 216. 이전에 비해 3/4 정도까지 봄
     roi_y_end = height 
     roi = frame[roi_y_start:roi_y_end, 0:width]
     line_draw = np.copy(roi)
     
-    y_line_roi = (height - 120) - roi_y_start
+    # y_line_roi (현재 프레임 기준) : 조향 목표로 삼는 가상의 선 (차량 전면에서 조금 앞)
+    y_line_roi = (height - 100) - roi_y_start # 480 - 100 = 380 (프레임 전체 기준). roi_y_start를 뺀 위치
     y_end_roi = height - roi_y_start
 
     # BGR -> Gray -> Blur -> Canny 순서
     roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(roi_gray, (5, 5), 0)
-    edges = cv2.Canny(blur, 50, 150)
+    # [추가] Canny 임계값 조정: 라인 인식이 불안정할 때 엣지 검출을 조금 더 민감하게 또는 덜 민감하게 조정 가능
+    edges = cv2.Canny(blur, 50, 150) # 50, 150은 표준적이므로 일단 유지
 
     # HoughLinesP threshold=8 유지 (곡선 인식률 향상)
     lines = cv2.HoughLinesP(edges, 
@@ -74,6 +76,7 @@ while cap.isOpened():
     l_m, r_m = [], []
     l_b, r_b = [], []
     
+    # 중앙 영역 제외를 위한 여유 공간 유지
     RIGHT_LANE_X_MIN = CENTER_X + 20  # 340
     LEFT_LANE_X_MAX = CENTER_X - 20   # 300
     
@@ -163,32 +166,35 @@ while cap.isOpened():
 
     
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 (🌟 중앙 주행 안정화 로직 적용)
+    # 5. 최종 조향 결정 로직 (🌟 중앙 주행 안정화 및 차선 손실 대비 로직 강화)
     # ------------------------------------------------
     final_steering = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
+    lines_detected_any = (r_cross != 0 or l_cross != 0)
     
     if lines_detected_both:
         # 1. 양쪽 차선 감지 시: 중앙값 사용 (가장 안정적)
         final_steering = -(rx + lx) / 2
         
     elif l_cross != 0:
-        # 2. 왼쪽 차선만 감지 시: Gain 1.0 유지 (곡선에서 과도한 좌회전 방지)
+        # 2. 왼쪽 차선만 감지 시: Gain 1.0 유지
         final_steering = -lx * 1.0 
         
     elif r_cross != 0:
-        # 3. 오른쪽 차선만 감지 시: [수정] Gain 1.5 -> 1.3으로 하향 (오른쪽으로 급격히 복귀하는 것을 완화)
+        # 3. 오른쪽 차선만 감지 시: Gain 1.3 유지
         final_steering = -rx * 1.3
         
     else:
-        # 4. 차선 미감지 시: 안전한 중앙값(Offset) 사용
-        final_steering = 0.0 # 조향 오차 0으로 초기화
+        # 4. [중요 수정] 차선 미감지 시: 마지막 유효 조향값을 사용 (관성 주행)
+        # 0.0으로 초기화하면 급격히 중앙으로 돌아와 불안정해짐.
+        final_steering = last_steering
         
     # [최종 수정] 직선 쏠림 보정 (항상 적용): 우측 쏠림 완화
+    # 차선 미감지 시에도 오프셋을 더하여 직진 관성이 유지되도록 함
     final_steering += STEERING_OFFSET
         
     # ------------------------------------------------
-    # 6. 모터 제어 실행 (last_steering 업데이트 로직 유지)
+    # 6. 모터 제어 실행 
     # ------------------------------------------------
     
     # MAX_STEERING 0.45 적용
@@ -201,11 +207,15 @@ while cap.isOpened():
         servo.value = steering
         motor.forward(0.7)
         
-        # last_steering은 오직 차선이 감지되었을 때만 업데이트
-        if lines_detected_both or l_cross != 0 or r_cross != 0:
+        # [수정] last_steering은 차선이 감지되었을 때만 업데이트하거나,
+        # 조향값이 오프셋 근처일 때만 업데이트하여 불필요한 값 저장을 막음.
+        # 여기서는 감지 시 업데이트 로직을 유지하면서, 직선 주행 시 초기화 로직을 강화합니다.
+        
+        # 차선이 감지되었을 때만 last_steering 업데이트
+        if lines_detected_any:
             last_steering = steering
             
-        # 직선 주행 시 last_steering 초기화
+        # 직선 주행(오프셋 근처) 시 last_steering을 오프셋으로 설정하여 안정화
         if abs(steering - STEERING_OFFSET) < 0.05:
             last_steering = STEERING_OFFSET
 
@@ -216,6 +226,22 @@ while cap.isOpened():
     # ------------------------------------------------
     # 7. 화면 출력
     # ------------------------------------------------
+    # [수정] 목표점(y_line_roi)에 중앙선과의 교차점을 시각화
+    if lines_detected_both:
+        target_x = int((r_cross + l_cross) / 2)
+        color = (0, 255, 255) # 노란색
+    elif l_cross != 0:
+        target_x = l_cross + 175 # 왼쪽 라인에서 차선 폭 절반 (139cm/2 + 25cm/2) 만큼 오른쪽으로 이동 (임의의 픽셀값 175 사용)
+        color = (0, 165, 255) # 주황색
+    elif r_cross != 0:
+        target_x = r_cross - 175 # 오른쪽 라인에서 차선 폭 절반 만큼 왼쪽으로 이동 (임의의 픽셀값 175 사용)
+        color = (0, 165, 255) # 주황색
+    else:
+        target_x = 320 # 차선 없을 때 중앙 (흰색 점)
+        color = (255, 255, 255)
+
+    cv2.circle(line_draw, (target_x, y_line_roi), 5, color, -1)
+    
     cv2.line(line_draw, (320, 0), (320, y_end_roi), (255, 255, 255), 1) 
     cv2.line(line_draw, (0, y_line_roi), (width, y_line_roi), (0, 0, 255), 1) 
     
