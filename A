@@ -20,8 +20,8 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 last_steering = 0.0  # 차선을 놓쳤을 때 직전 값을 기억하기 위한 변수
 MAX_STEERING = 0.6   # 최대 조향각 0.6 유지
 
-# 🌟 [수정] 직선 쏠림 보정 0.15 유지
-STEERING_OFFSET = 0.15 
+# 🌟 [최종 수정] 직선 쏠림 보정을 0.15에서 0.20으로 상향하여 왼쪽 쏠림 강제 보정
+STEERING_OFFSET = 0.20 
 
 # 차선 손실 대비를 위한 직전 프레임 라인 정보 저장
 last_r_m, last_r_b = [], []
@@ -38,7 +38,7 @@ while cap.isOpened():
         break
     
     # ------------------------------------------------
-    # 3. 이미지 전처리 및 Hough 변환 (🌟 HSV 색상 마스킹 적용)
+    # 3. 이미지 전처리 및 Hough 변환 (🌟 회색조/Canny 복구)
     # ------------------------------------------------
     frame = cv2.resize(frame, (640, 480))
     height, width = frame.shape[:2]
@@ -53,21 +53,9 @@ while cap.isOpened():
     y_line_roi = (height - 120) - roi_y_start
     y_end_roi = height - roi_y_start
 
-    # 🌟 노란색 차선 인식을 위한 HSV 마스킹
-    roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    
-    # 🌟 노란색 범위 정의 (약간의 오렌지~연두색 포함)
-    # H: 20~40, S: 100~255, V: 100~255
-    lower_yellow = np.array([20, 100, 100])
-    upper_yellow = np.array([40, 255, 255])
-    
-    # 🌟 마스크 생성: 노란색만 추출
-    mask = cv2.inRange(roi_hsv, lower_yellow, upper_yellow)
-    
-    # 🌟 노란색 마스크된 이미지에 Gaussian Blur 적용
-    blur = cv2.GaussianBlur(mask, (5, 5), 0)
-    
-    # 🌟 Canny 엣지 검출은 마스크된 이미지(blur)를 사용
+    # 🌟 [복구] BGR -> Gray -> Blur -> Canny 순서로 복구
+    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(roi_gray, (5, 5), 0)
     edges = cv2.Canny(blur, 50, 150)
 
     lines = cv2.HoughLinesP(edges, 
@@ -172,7 +160,7 @@ while cap.isOpened():
 
     
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 (Gain 2.0 유지)
+    # 5. 최종 조향 결정 로직 
     # ------------------------------------------------
     final_steering = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
@@ -182,18 +170,18 @@ while cap.isOpened():
         final_steering = -(rx + lx) / 2
         
     elif l_cross != 0:
-        # 2. 왼쪽 차선만 감지 시: Gain 2.0 유지
-        final_steering = -lx * 2.0 
+        # 2. 왼쪽 차선만 감지 시: 🌟 [최종 수정] Gain 2.0을 1.8로 하향
+        final_steering = -lx * 1.8 
         
     elif r_cross != 0:
-        # 3. 오른쪽 차선만 감지 시: Gain 2.0 유지
-        final_steering = -rx * 2.0
+        # 3. 오른쪽 차선만 감지 시: 🌟 [최종 수정] Gain 2.0을 1.8로 하향
+        final_steering = -rx * 1.8
         
     else:
         # 4. 차선 미감지 시: 직전 조향값 유지
         final_steering = last_steering
         
-    # 🌟 [수정] 직선 주행 시 왼쪽 쏠림을 보정하기 위해 Offset 0.15 유지
+    # 🌟 [최종 수정] 직선 주행 시 왼쪽 쏠림을 보정하기 위해 Offset 0.20 추가 (최대 보정)
     final_steering += STEERING_OFFSET
         
     # ------------------------------------------------
@@ -221,8 +209,8 @@ while cap.isOpened():
     
     cv2.imshow("Lane View", line_draw)
     
-    # 🌟 [디버그] HSV 마스크 이미지 확인을 위한 창 추가
-    cv2.imshow("HSV Mask (Yellow Line)", mask)
+    # 🌟 [디버그] 엣지 이미지 확인 (선이 잘 보이는지 확인)
+    cv2.imshow("Canny Edges", edges)
 
     if cv2.waitKey(1) == ord('q'):
         break
