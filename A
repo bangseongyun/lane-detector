@@ -21,7 +21,7 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 STEERING_OFFSET = 0.20
 last_steering = STEERING_OFFSET 
 
-# [최종 수정 6] 직선 주행 시 최대 조향 각도 제한: 0.42 -> 0.25 (직선에서 큰 조향을 원천적으로 방지)
+# [유지] 직선 주행 시 최대 조향 각도 제한: 0.25 (직선에서 큰 조향을 원천적으로 방지)
 MAX_STEERING = 0.42 # 전체 최대값
 MAX_STEERING_STRAIGHT = 0.25 # 직선 주행 시 최대값
 
@@ -30,7 +30,7 @@ STEERING_LOOKAHEAD_PIXELS = 0
 # [유지] 스무딩 극대화: 0.15 (직전 조향값 영향력 85%로 직진성 강화)
 STEERING_SMOOTHING_ALPHA = 0.15 
 
-# [유지] P_GAIN_STRAIGHT 최대치 적용: 0.60 (직선 복원력 최대로 강화)
+# [유지] P_GAIN_STRAIGHT 최대치 적용: 0.60 
 P_GAIN_STRAIGHT = 0.60
 
 print("System Ready. Start Driving...")
@@ -49,7 +49,7 @@ while cap.isOpened():
     height, width = frame.shape[:2]
     CENTER_X = width // 2  # 320
     
-    # [유지] ROI 시작점: 0.65 (시야를 하단 35%로 미세 확대)
+    # [유지] ROI 시작점: 0.65 
     roi_y_start = int(height * 0.65) 
     roi_y_end = height 
     roi = frame[roi_y_start:roi_y_end, 0:width]
@@ -62,7 +62,7 @@ while cap.isOpened():
     blur = cv2.GaussianBlur(roi_gray, (5, 5), 0)
     
     edges = cv2.Canny(blur, 50, 150)
-    # [최종 수정 7] HoughLinesP Threshold 극대화: 10 -> 15 (노이즈로 인한 오인식 차단)
+    # [유지] HoughLinesP Threshold 극대화: 15
     lines = cv2.HoughLinesP(edges, 
                             rho=1, 
                             theta=np.pi/180, 
@@ -88,10 +88,10 @@ while cap.isOpened():
             y_b = y1 - m * x1 
             mid_x = (x1 + x2) / 2
             
-            # 차선이 중앙에서 너무 멀리 떨어져 있으면 무시 (인식 범위 강화)
-            if m > 0.05 and mid_x > RIGHT_LANE_X_MIN:
+            # [최종 수정 9] 차선 기울기 조건 강화: +/- 0.05 -> +/- 0.1 (더 완만한 기울기 무시)
+            if m > 0.1 and mid_x > RIGHT_LANE_X_MIN:
                 r_m.append(m); r_b.append(y_b)
-            elif m < -0.05 and mid_x < LEFT_LANE_X_MAX:
+            elif m < -0.1 and mid_x < LEFT_LANE_X_MAX:
                 l_m.append(m); l_b.append(y_b)
 
     rx, lx = 0.0, 0.0
@@ -118,21 +118,16 @@ while cap.isOpened():
             cv2.line(line_draw, (l_cross, y_line_roi), (x_end_vis, y_end_roi), (0, 255, 0), 3)
 
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 
+    # 5. 최종 조향 결정 로직 (강제 직진 모드 도입)
     # ------------------------------------------------
     
     P_term = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
     
     if lines_detected_both:
-        # 🌟 직선 주행 (P 제어)
-        # [최종 수정 8] 왼쪽 쏠림 보정을 위해 오른쪽 차선(rx)에 60% 가중치 부여
-        # current_error = -(rx + lx) / 2 # 이전 중앙 계산
-        current_error = -((0.4 * lx) + (0.6 * rx)) # 중앙점을 오른쪽으로 강제 이동
-        
-        P_term = current_error * P_GAIN_STRAIGHT
-        
-        # 직선 주행 시 적용할 조향 제한을 MAX_STEERING_TEMP에 저장
+        # 🌟 직선 주행 - 강제 직진 모드!
+        # 차선 오차(current_error)를 무시하고 오직 기계적 쏠림 보정값만 사용하도록 P_term을 0으로 설정
+        P_term = 0.0 
         MAX_STEERING_TEMP = MAX_STEERING_STRAIGHT
         
     elif l_cross != 0:
@@ -156,6 +151,7 @@ while cap.isOpened():
     final_steering = unoffseted_steering 
         
     # [핵심] 직선 쏠림 보정 적용 (0.20)
+    # 직선 모드 (P_term=0.0)일 때, final_steering은 오직 STEERING_OFFSET (0.20)만 갖게 됨.
     final_steering += STEERING_OFFSET
         
     # EMA Smoothing 적용 (직전 조향값 영향력 85%로 극대화)
@@ -190,10 +186,11 @@ while cap.isOpened():
     # ------------------------------------------------
     # 7. 화면 출력 (디버깅)
     # ------------------------------------------------
+    # 강제 직진 모드일 때는 타겟 X 위치가 320 (정중앙)이 됩니다.
     target_x = 320
     if l_cross != 0 and r_cross != 0: 
-        # 디버깅 타겟 X 위치도 가중치 반영
-        target_x = int((l_cross * 0.4) + (r_cross * 0.6)) 
+        # 강제 직진 모드: 목표를 중앙으로 표시
+        target_x = CENTER_X 
     elif l_cross != 0: 
         target_x = l_cross + int(width * 0.3) 
     elif r_cross != 0: 
