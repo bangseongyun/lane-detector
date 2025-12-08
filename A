@@ -17,23 +17,16 @@ cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-last_steering = 0.0  # 차선을 놓쳤을 때 직전 값을 기억하기 위한 변수
-
-# 최대 조향각 (0.42 유지)
-MAX_STEERING = 0.42
-
-# 직선 쏠림 보정 (0.25 유지)
+# [유지] STEERING_OFFSET (0.25)을 초기값으로 설정하여 우회 쏠림 상쇄
 STEERING_OFFSET = 0.25
+last_steering = STEERING_OFFSET 
 
-# [수정 1] Lookahead 설정: 180px -> 150px로 축소 (직선 시 과민 반응 억제)
-# 시야를 약간 줄여서 먼 곳의 미세한 흔들림에 덜 반응하게 합니다.
+MAX_STEERING = 0.42
 STEERING_LOOKAHEAD_PIXELS = 150
-
-# [유지] EMA Smoothing Factor: 0.5 (최대 부드러움 유지)
-STEERING_SMOOTHING_ALPHA = 0.5
+STEERING_SMOOTHING_ALPHA = 0.5 # 최대 부드러움
 
 print("System Ready. Start Driving...")
-motor.forward(0.7)
+# 모터는 루프 내에서 조향값과 함께 실행됩니다.
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -49,12 +42,11 @@ while cap.isOpened():
     height, width = frame.shape[:2]
     CENTER_X = width // 2  # 320
     
-    roi_y_start = int(height * 0.45) # 216
+    roi_y_start = int(height * 0.45)
     roi_y_end = height 
     roi = frame[roi_y_start:roi_y_end, 0:width]
     line_draw = np.copy(roi)
     
-    # 조향 기준선 (Lookahead 150px 적용)
     y_line_roi = (height - STEERING_LOOKAHEAD_PIXELS) - roi_y_start 
     y_end_roi = height - roi_y_start
 
@@ -75,8 +67,8 @@ while cap.isOpened():
     l_m, r_m = [], []
     l_b, r_b = [], []
     
-    RIGHT_LANE_X_MIN = CENTER_X - 50  # 270
-    LEFT_LANE_X_MAX = CENTER_X + 50   # 370
+    RIGHT_LANE_X_MIN = CENTER_X - 50
+    LEFT_LANE_X_MAX = CENTER_X + 50
     
     if lines is not None:
         for line in lines:
@@ -86,15 +78,16 @@ while cap.isOpened():
             y_b = y1 - m * x1 
             mid_x = (x1 + x2) / 2
             
+            # 오른쪽 차선: 양의 기울기 (+0.05 이상)
             if m > 0.05 and mid_x > RIGHT_LANE_X_MIN:
                 r_m.append(m); r_b.append(y_b)
+            # 왼쪽 차선: 음의 기울기 (-0.05 이하)
             elif m < -0.05 and mid_x < LEFT_LANE_X_MAX:
                 l_m.append(m); l_b.append(y_b)
 
     rx, lx = 0.0, 0.0
     r_cross, l_cross = 0, 0
     
-    # 오른쪽 라인 처리
     if len(r_m) > 0:
         avg_m = np.mean(r_m)
         avg_y_b = np.mean(r_b)
@@ -105,7 +98,6 @@ while cap.isOpened():
             x_end_vis = int((y_end_roi - avg_y_b) / avg_m)
             cv2.line(line_draw, (r_cross, y_line_roi), (x_end_vis, y_end_roi), (255, 0, 0), 3)
 
-    # 왼쪽 라인 처리
     if len(l_m) > 0: 
         avg_m = np.mean(l_m)
         avg_y_b = np.mean(l_b)
@@ -117,32 +109,32 @@ while cap.isOpened():
             cv2.line(line_draw, (l_cross, y_line_roi), (x_end_vis, y_end_roi), (0, 255, 0), 3)
 
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 (🌟 최저 Gain 적용)
+    # 5. 최종 조향 결정 로직 (직선/곡선 명확 분리)
     # ------------------------------------------------
     final_steering = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
     lines_detected_any = (r_cross != 0 or l_cross != 0)
     
     if lines_detected_both:
-        # 양쪽 감지: 두 차선의 평균을 사용한 중앙 주행 (완벽한 직진 유도)
+        # 🌟 직선 주행: 두 차선의 평균을 사용해 중앙으로 강제 조향 
         final_steering = -(rx + lx) / 2
         
     elif l_cross != 0:
-        # [수정 2] 왼쪽 차선만 감지: Gain 0.8 -> 0.7 (더 느리게 꺾음)
+        # 🌟 곡선 주행: 왼쪽 차선 추종 (느린 Gain 0.7)
         final_steering = -lx * 0.7 
         
     elif r_cross != 0:
-        # [수정 3] 오른쪽 차선만 감지: Gain 1.0 -> 0.9 (더 느리게 꺾음)
+        # 🌟 곡선 주행: 오른쪽 차선 추종 (느린 Gain 0.9)
         final_steering = -rx * 0.9
         
     else:
-        # 차선 미감지 시: 직전 조향값 유지 (관성 주행)
+        # 차선 미감지 시: 직전 조향값 유지
         final_steering = last_steering
         
-    # 직선 쏠림 보정 적용
+    # 직선 쏠림 보정 적용 (조향 최종 목표값 설정)
     final_steering += STEERING_OFFSET
         
-    # [유지] EMA Smoothing 적용: 계산된 최종 목표 조향값을 부드럽게 실제 조향값에 반영
+    # EMA Smoothing 적용 (부드러운 조향 변화)
     final_steering = (final_steering * STEERING_SMOOTHING_ALPHA) + \
                      (last_steering * (1 - STEERING_SMOOTHING_ALPHA))
         
@@ -163,7 +155,7 @@ while cap.isOpened():
         # last_steering 업데이트
         last_steering = steering
         
-        # 직선 주행(오프셋 근처) 시 last_steering 초기화
+        # 직진 상태 근처일 때 last_steering 초기화
         if abs(steering - STEERING_OFFSET) < 0.1:
             last_steering = STEERING_OFFSET
 
@@ -176,7 +168,6 @@ while cap.isOpened():
     # ------------------------------------------------
     target_x = 320
     if l_cross != 0 and r_cross != 0: target_x = (l_cross + r_cross) // 2
-    # 목표 지점 시각화는 현재 설정된 Lookahead 150px 지점을 기준으로 표시됩니다.
     elif l_cross != 0: target_x = l_cross + 175 
     elif r_cross != 0: target_x = r_cross - 175
     
