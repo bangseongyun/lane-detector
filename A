@@ -17,16 +17,20 @@ cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-# [유지] STEERING_OFFSET (0.25)을 초기값으로 설정하여 우회 쏠림 상쇄
-STEERING_OFFSET = 0.25
-last_steering = STEERING_OFFSET 
+# [수정 1] STEERING_OFFSET 강제 조정: 0.25 -> 0.15
+# 시작하자마자 우회하는 문제를 해결하기 위해 직진 보정값을 낮춥니다.
+# 이렇게 하면 서보 모터가 0.25보다 작은 값(좌회전 방향)을 기본으로 가지게 되어 우회 쏠림을 상쇄합니다.
+STEERING_OFFSET = 0.15 
+last_steering = STEERING_OFFSET 
 
 MAX_STEERING = 0.42
-STEERING_LOOKAHEAD_PIXELS = 150
-STEERING_SMOOTHING_ALPHA = 0.5 # 최대 부드러움
+
+# [수정 2] Lookahead 축소: 150 -> 120
+# 눈앞의 차선 중앙 유지에 집중하여 미세한 흔들림에 덜 반응하게 합니다.
+STEERING_LOOKAHEAD_PIXELS = 120 
+STEERING_SMOOTHING_ALPHA = 0.5 # 최대 부드러움 유지
 
 print("System Ready. Start Driving...")
-# 모터는 루프 내에서 조향값과 함께 실행됩니다.
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -40,29 +44,31 @@ while cap.isOpened():
     # ------------------------------------------------
     frame = cv2.resize(frame, (640, 480))
     height, width = frame.shape[:2]
-    CENTER_X = width // 2  # 320
+    CENTER_X = width // 2  # 320
     
     roi_y_start = int(height * 0.45)
-    roi_y_end = height 
+    roi_y_end = height 
     roi = frame[roi_y_start:roi_y_end, 0:width]
     line_draw = np.copy(roi)
     
-    y_line_roi = (height - STEERING_LOOKAHEAD_PIXELS) - roi_y_start 
+    y_line_roi = (height - STEERING_LOOKAHEAD_PIXELS) - roi_y_start 
     y_end_roi = height - roi_y_start
 
     roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(roi_gray, (5, 5), 0)
     edges = cv2.Canny(blur, 50, 150)
 
-    lines = cv2.HoughLinesP(edges, 
-                            rho=1, 
-                            theta=np.pi/180, 
-                            threshold=8, 
-                            minLineLength=5, 
+    # [수정 3] HoughLinesP 감도 조정: 인식 안 되는 문제 해결 시도
+    # Threshold(8->7)를 낮추고 MinLineLength(5->3)를 줄여 더 많은 선분을 인식
+    lines = cv2.HoughLinesP(edges, 
+                            rho=1, 
+                            theta=np.pi/180, 
+                            threshold=7, 
+                            minLineLength=3, 
                             maxLineGap=20)
     
     # ------------------------------------------------
-    # 4. 차선 구분 및 좌표 계산 
+    # 4. 차선 구분 및 좌표 계산 
     # ------------------------------------------------
     l_m, r_m = [], []
     l_b, r_b = [], []
@@ -72,10 +78,10 @@ while cap.isOpened():
     
     if lines is not None:
         for line in lines:
-            x1, y1, x2, y2 = line[0] 
+            x1, y1, x2, y2 = line[0] 
             if (x2 - x1) == 0: continue
-            m = (y2 - y1) / (x2 - x1) 
-            y_b = y1 - m * x1 
+            m = (y2 - y1) / (x2 - x1) 
+            y_b = y1 - m * x1 
             mid_x = (x1 + x2) / 2
             
             # 오른쪽 차선: 양의 기울기 (+0.05 이상)
@@ -91,55 +97,55 @@ while cap.isOpened():
     if len(r_m) > 0:
         avg_m = np.mean(r_m)
         avg_y_b = np.mean(r_b)
-        if avg_m != 0: 
+        if avg_m != 0: 
             r_cross = int((y_line_roi - avg_y_b) / avg_m)
-            er = r_cross - 320 
-            rx = float(er/400) 
+            er = r_cross - 320 
+            rx = float(er/400) 
             x_end_vis = int((y_end_roi - avg_y_b) / avg_m)
             cv2.line(line_draw, (r_cross, y_line_roi), (x_end_vis, y_end_roi), (255, 0, 0), 3)
 
-    if len(l_m) > 0: 
+    if len(l_m) > 0: 
         avg_m = np.mean(l_m)
         avg_y_b = np.mean(l_b)
         if avg_m != 0:
             l_cross = int((y_line_roi - avg_y_b) / avg_m)
             er = l_cross - 320
-            lx = float(er/400) 
+            lx = float(er/400) 
             x_end_vis = int((y_end_roi - avg_y_b) / avg_m)
             cv2.line(line_draw, (l_cross, y_line_roi), (x_end_vis, y_end_roi), (0, 255, 0), 3)
 
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 (직선/곡선 명확 분리)
+    # 5. 최종 조향 결정 로직 (Gain 유지, Offset으로 직진 강제)
     # ------------------------------------------------
     final_steering = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
     lines_detected_any = (r_cross != 0 or l_cross != 0)
     
     if lines_detected_both:
-        # 🌟 직선 주행: 두 차선의 평균을 사용해 중앙으로 강제 조향 
+        # 🌟 직선 주행: 두 차선 중앙 강제
         final_steering = -(rx + lx) / 2
         
     elif l_cross != 0:
-        # 🌟 곡선 주행: 왼쪽 차선 추종 (느린 Gain 0.7)
+        # 🌟 곡선 주행: 왼쪽 차선 추종 (Gain 0.7 유지)
         final_steering = -lx * 0.7 
         
     elif r_cross != 0:
-        # 🌟 곡선 주행: 오른쪽 차선 추종 (느린 Gain 0.9)
+        # 🌟 곡선 주행: 오른쪽 차선 추종 (Gain 0.9 유지)
         final_steering = -rx * 0.9
         
     else:
         # 차선 미감지 시: 직전 조향값 유지
         final_steering = last_steering
         
-    # 직선 쏠림 보정 적용 (조향 최종 목표값 설정)
+    # [핵심] 직선 쏠림 보정 적용 (0.15로 대폭 감소)
     final_steering += STEERING_OFFSET
         
-    # EMA Smoothing 적용 (부드러운 조향 변화)
+    # EMA Smoothing 적용
     final_steering = (final_steering * STEERING_SMOOTHING_ALPHA) + \
                      (last_steering * (1 - STEERING_SMOOTHING_ALPHA))
         
     # ------------------------------------------------
-    # 6. 모터 제어 실행 
+    # 6. 모터 제어 실행 
     # ------------------------------------------------
     
     # 조향값 제한
@@ -152,7 +158,6 @@ while cap.isOpened():
         servo.value = steering
         motor.forward(0.7)
         
-        # last_steering 업데이트
         last_steering = steering
         
         # 직진 상태 근처일 때 last_steering 초기화
