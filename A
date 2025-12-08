@@ -21,14 +21,16 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 STEERING_OFFSET = 0.20
 last_steering = STEERING_OFFSET 
 
-MAX_STEERING = 0.42
+# [최종 수정 6] 직선 주행 시 최대 조향 각도 제한: 0.42 -> 0.25 (직선에서 큰 조향을 원천적으로 방지)
+MAX_STEERING = 0.42 # 전체 최대값
+MAX_STEERING_STRAIGHT = 0.25 # 직선 주행 시 최대값
 
 # [유지] Lookahead 제거: 0
 STEERING_LOOKAHEAD_PIXELS = 0 
 # [유지] 스무딩 극대화: 0.15 (직전 조향값 영향력 85%로 직진성 강화)
 STEERING_SMOOTHING_ALPHA = 0.15 
 
-# [최종 수정 3] P_GAIN_STRAIGHT 최대치 적용: 0.40 -> 0.60 (직선 복원력 최대로 강화)
+# [유지] P_GAIN_STRAIGHT 최대치 적용: 0.60 (직선 복원력 최대로 강화)
 P_GAIN_STRAIGHT = 0.60
 
 print("System Ready. Start Driving...")
@@ -47,7 +49,7 @@ while cap.isOpened():
     height, width = frame.shape[:2]
     CENTER_X = width // 2  # 320
     
-    # [최종 수정 4] ROI 시작점 조정: 0.70 -> 0.65 (시야를 하단 35%로 미세 확대)
+    # [유지] ROI 시작점: 0.65 (시야를 하단 35%로 미세 확대)
     roi_y_start = int(height * 0.65) 
     roi_y_end = height 
     roi = frame[roi_y_start:roi_y_end, 0:width]
@@ -60,11 +62,11 @@ while cap.isOpened():
     blur = cv2.GaussianBlur(roi_gray, (5, 5), 0)
     
     edges = cv2.Canny(blur, 50, 150)
-    # [최종 수정 5] HoughLinesP Threshold 강화: 7 -> 10 (노이즈 줄여 정확한 차선만 검출)
+    # [최종 수정 7] HoughLinesP Threshold 극대화: 10 -> 15 (노이즈로 인한 오인식 차단)
     lines = cv2.HoughLinesP(edges, 
                             rho=1, 
                             theta=np.pi/180, 
-                            threshold=10, 
+                            threshold=15, 
                             minLineLength=3, 
                             maxLineGap=20)
     
@@ -121,27 +123,35 @@ while cap.isOpened():
     
     P_term = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
-    lines_detected_any = (r_cross != 0 or l_cross != 0)
     
     if lines_detected_both:
-        # 🌟 직선 주행 (P 제어): P_GAIN_STRAIGHT(0.60) 적용 -> 최대 복원력
-        current_error = -(rx + lx) / 2
+        # 🌟 직선 주행 (P 제어)
+        # [최종 수정 8] 왼쪽 쏠림 보정을 위해 오른쪽 차선(rx)에 60% 가중치 부여
+        # current_error = -(rx + lx) / 2 # 이전 중앙 계산
+        current_error = -((0.4 * lx) + (0.6 * rx)) # 중앙점을 오른쪽으로 강제 이동
+        
         P_term = current_error * P_GAIN_STRAIGHT
+        
+        # 직선 주행 시 적용할 조향 제한을 MAX_STEERING_TEMP에 저장
+        MAX_STEERING_TEMP = MAX_STEERING_STRAIGHT
         
     elif l_cross != 0:
         # 🌟 곡선 주행: 왼쪽 차선 추종 (Gain 0.6 유지)
         current_error = -lx
         P_term = current_error * 0.6
+        MAX_STEERING_TEMP = MAX_STEERING
         
     elif r_cross != 0:
         # 🌟 곡선 주행: 오른쪽 차선 추종 (Gain 0.8 유지)
         current_error = -rx
         P_term = current_error * 0.8
+        MAX_STEERING_TEMP = MAX_STEERING
         
     else:
         # 차선 미감지 시: 직전 조향값 유지 (오프셋 제외된 값)
         P_term = last_steering - STEERING_OFFSET
-
+        MAX_STEERING_TEMP = MAX_STEERING
+        
     unoffseted_steering = P_term
     final_steering = unoffseted_steering 
         
@@ -156,9 +166,9 @@ while cap.isOpened():
     # 6. 모터 제어 실행 
     # ------------------------------------------------
     
-    # 조향값 제한
-    if abs(final_steering) > MAX_STEERING:
-        steering = math.copysign(MAX_STEERING, final_steering)
+    # 조향값 제한 (직선이냐 곡선이냐에 따라 다른 MAX_STEERING_TEMP 적용)
+    if abs(final_steering) > MAX_STEERING_TEMP:
+        steering = math.copysign(MAX_STEERING_TEMP, final_steering)
     else:
         steering = final_steering
 
@@ -182,7 +192,8 @@ while cap.isOpened():
     # ------------------------------------------------
     target_x = 320
     if l_cross != 0 and r_cross != 0: 
-        target_x = (l_cross + r_cross) // 2
+        # 디버깅 타겟 X 위치도 가중치 반영
+        target_x = int((l_cross * 0.4) + (r_cross * 0.6)) 
     elif l_cross != 0: 
         target_x = l_cross + int(width * 0.3) 
     elif r_cross != 0: 
