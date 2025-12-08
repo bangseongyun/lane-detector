@@ -23,9 +23,9 @@ last_steering = STEERING_OFFSET
 
 MAX_STEERING = 0.42
 
-# [수정 1] Lookahead 극단적 감소: 120 -> 90
-# 곡선 예측 능력을 의도적으로 낮춰서, 차량이 '너무 빨리' 꺾는 것을 방지
-STEERING_LOOKAHEAD_PIXELS = 90 
+# [최종 수정 1] Lookahead 극단적 최소화: 90 -> 50
+# 차선이 '지금' 어디 있는지만 보도록 강제하여 미리 꺾는 문제 해결
+STEERING_LOOKAHEAD_PIXELS = 50 
 STEERING_SMOOTHING_ALPHA = 0.5 # 최대 부드러움 유지
 
 print("System Ready. Start Driving...")
@@ -44,21 +44,19 @@ while cap.isOpened():
     height, width = frame.shape[:2]
     CENTER_X = width // 2  # 320
     
-    # [수정 2] ROI 시작점 조정: 0.45 -> 0.50 (시야 좁히기)
-    # 이미지 상단 50%를 버리고 하단 50%만 사용하여, 조향 판단 영역을 좁힙니다.
+    # [유지] ROI 시작점: 0.50 (시야 좁히기 유지)
     roi_y_start = int(height * 0.50) 
     roi_y_end = height 
     roi = frame[roi_y_start:roi_y_end, 0:width]
     line_draw = np.copy(roi)
     
-    # 조향 기준선 (Lookahead 90px 적용)
+    # 조향 기준선 (Lookahead 50px 적용)
     y_line_roi = (height - STEERING_LOOKAHEAD_PIXELS) - roi_y_start 
     y_end_roi = height - roi_y_start
 
     roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(roi_gray, (5, 5), 0)
     
-    # HoughLinesP 파라미터 유지 (인식률 개선 목적)
     edges = cv2.Canny(blur, 50, 150)
     lines = cv2.HoughLinesP(edges, 
                             rho=1, 
@@ -113,7 +111,7 @@ while cap.isOpened():
             cv2.line(line_draw, (l_cross, y_line_roi), (x_end_vis, y_end_roi), (0, 255, 0), 3)
 
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 (Gain 유지, Offset으로 직진 강제)
+    # 5. 최종 조향 결정 로직 (Gain 추가 둔화)
     # ------------------------------------------------
     final_steering = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
@@ -124,12 +122,12 @@ while cap.isOpened():
         final_steering = -(rx + lx) / 2
         
     elif l_cross != 0:
-        # 🌟 곡선 주행: 왼쪽 차선 추종 (느린 Gain 0.7 유지)
-        final_steering = -lx * 0.7 
+        # 🌟 곡선 주행: 왼쪽 차선 추종 (Gain 추가 둔화: 0.7 -> 0.6)
+        final_steering = -lx * 0.6 
         
     elif r_cross != 0:
-        # 🌟 곡선 주행: 오른쪽 차선 추종 (느린 Gain 0.9 유지)
-        final_steering = -rx * 0.9
+        # 🌟 곡선 주행: 오른쪽 차선 추종 (Gain 추가 둔화: 0.9 -> 0.8)
+        final_steering = -rx * 0.8
         
     else:
         # 차선 미감지 시: 직전 조향값 유지
