@@ -18,10 +18,11 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 last_steering = 0.0  # 차선을 놓쳤을 때 직전 값을 기억하기 위한 변수
-MAX_STEERING = 0.6   # 최대 조향각 0.6 유지
+# [수정] 최대 조향각 하향 (0.6 -> 0.45): 곡선에서 바퀴가 너무 많이 꺾이는 것을 방지
+MAX_STEERING = 0.45
 
-# 직선 쏠림 보정 0.20 유지
-STEERING_OFFSET = 0.20 
+# [수정] 직선 쏠림 보정 증가 (0.20 -> 0.30): 왼쪽 차선 밟힘 방지, 우측 주행 유도
+STEERING_OFFSET = 0.30
 
 # 차선 손실 대비를 위한 직전 프레임 라인 정보 저장
 last_r_m, last_r_b = [], []
@@ -135,7 +136,7 @@ while cap.isOpened():
         avg_m = np.mean(l_m)
         avg_y_b = np.mean(l_b)
         last_l_m, last_l_b = l_m.copy(), l_b.copy()
-      
+    
         if avg_m != 0:
             l_cross = int((y_line_roi - avg_y_b) / avg_m)
             er = l_cross - 320
@@ -171,25 +172,26 @@ while cap.isOpened():
         final_steering = -(rx + lx) / 2
         
     elif l_cross != 0:
-        # 2. 왼쪽 차선만 감지 시: 🌟 [수정] Gain 1.7로 하향 (왼쪽으로 덜 꺾이도록 유도)
-        final_steering = -lx * 1.7 
+        # 2. 왼쪽 차선만 감지 시: [수정] Gain 1.7 -> 1.3으로 하향 (급격한 왼쪽 조향 방지)
+        final_steering = -lx * 1.3 
         
     elif r_cross != 0:
-        # 3. 오른쪽 차선만 감지 시: Gain 2.0 유지 (오른쪽 차선 복귀 속도 유지)
-        final_steering = -rx * 2.0
+        # 3. 오른쪽 차선만 감지 시: [수정] Gain 2.0 -> 1.5로 하향 (급격한 오른쪽 조향 방지)
+        final_steering = -rx * 1.5
         
     else:
-        # 4. 차선 미감지 시: 🌟 [수정] last_steering 대신 안전한 중앙값(Offset) 사용
-        #    이전의 큰 조향값 유지를 막아 곡선 탈출 후 안정화 유도
+        # 4. 차선 미감지 시: 안전한 중앙값(Offset) 사용
+        # 이전의 큰 조향값 유지를 막아 곡선 탈출 후 안정화 유도
         final_steering = 0.0 # 일단 조향 오차 0으로 초기화
         
-    # 직선 쏠림 보정 (항상 적용)
+    # [수정] 직선 쏠림 보정 (항상 적용): 우측 주행 유도
     final_steering += STEERING_OFFSET
         
     # ------------------------------------------------
-    # 6. 모터 제어 실행 (🌟 last_steering 업데이트 로직 강화)
+    # 6. 모터 제어 실행 (last_steering 업데이트 로직 유지)
     # ------------------------------------------------
     
+    # [수정] MAX_STEERING을 0.45로 조정하여 적용
     if abs(final_steering) > MAX_STEERING:
         steering = math.copysign(MAX_STEERING, final_steering)
     else:
@@ -199,15 +201,14 @@ while cap.isOpened():
         servo.value = steering
         motor.forward(0.7)
         
-        # 🌟 [수정] last_steering은 오직 차선이 감지되었을 때만 업데이트
-        #    차선이 미감지된 상황에서는 불안정한 조향값을 last_steering에 저장하지 않음.
+        # last_steering은 오직 차선이 감지되었을 때만 업데이트
         if lines_detected_both or l_cross != 0 or r_cross != 0:
             last_steering = steering
             
         # 💡 [추가 로직] 만약 최종 조향값이 STEERING_OFFSET과 비슷하다면(직선 주행 시),
-        #    last_steering을 0.0으로 초기화하여 다음 미감지 상황에 대비할 수도 있음.
-        # if abs(steering - STEERING_OFFSET) < 0.05:
-        #     last_steering = STEERING_OFFSET
+        # last_steering을 STEERING_OFFSET 값으로 초기화하여 다음 미감지 상황에 대비할 수도 있음.
+        if abs(steering - STEERING_OFFSET) < 0.05:
+            last_steering = STEERING_OFFSET
 
     else:
         motor.stop()
