@@ -7,8 +7,6 @@ from gpiozero import Motor
 # ==========================================
 # 1. 하드웨어 설정
 # ==========================================
-# 서보: GPIO 12
-# 모터: GPIO 13(전진), 19(후진)
 servo = Servo(12)
 motor = Motor(forward=13, backward=19)
 
@@ -22,36 +20,40 @@ cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 last_steering = 0.0  # 차선을 놓쳤을 때 직전 값을 기억하기 위한 변수
 MAX_STEERING = 0.4   # 서보모터 보호를 위한 최대 조향각 제한
 
-print("System Ready. Start Driving...")
-motor.forward(0.7)  # 기본 속도 0.8로 출발
+# 🌟 [추가] 차선 손실 대비를 위한 직전 프레임 라인 정보 저장
+last_r_m, last_r_b = [], []
+last_l_m, last_l_b = [], []
 
-# [수정됨] try 구문 제거 -> while문 바로 시작
+print("System Ready. Start Driving...")
+motor.forward(0.7)
+
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         print("Camera Error")
+        motor.stop()
         break
     
     # ------------------------------------------------
-    # 3. 이미지 전처리
+    # 3. 이미지 전처리 및 Hough 변환
     # ------------------------------------------------
     frame = cv2.resize(frame, (640, 480))
     height, width = frame.shape[:2]
+    CENTER_X = width // 2
     
-    # ROI 설정
+    # ROI 설정 (하단 절반)
     roi_y_start = height // 2  
     roi_y_end = height 
-    
     roi = frame[roi_y_start:roi_y_end, 0:width]
     line_draw = np.copy(roi)
     
-    # 기준선(타겟 라인) 좌표 계산
+    # 기준선 좌표 (ROI 내의 Y 좌표로 변환)
     y_line_roi = (height - 120) - roi_y_start
     y_end_roi = height - roi_y_start
 
-    # Canny & Hough 변환
+    # Canny 파라미터 조정 (Blur 커널 크기 11->5)
     roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(roi_gray, (11, 11), 0)
+    blur = cv2.GaussianBlur(roi_gray, (5, 5), 0)
     edges = cv2.Canny(blur, 50, 150)
 
     lines = cv2.HoughLinesP(edges, 
@@ -74,82 +76,111 @@ while cap.isOpened():
             m = (y2 - y1) / (x2 - x1) 
             y_b = y1 - m * x1 
             
-            # 기울기로 좌우 구분
-            if m > 0.1 : 
+            mid_x = (x1 + x2) / 2 # X 좌표 필터링 추가
+            
+            # 기울기와 위치로 좌우 구분
+            if m > 0.1 and mid_x > CENTER_X: # 오른쪽 차선: 기울기 양수, 화면 중앙보다 오른쪽
                 r_m.append(m); r_b.append(y_b)
-            elif m < -0.1: 
+            elif m < -0.1 and mid_x < CENTER_X: # 왼쪽 차선: 기울기 음수, 화면 중앙보다 왼쪽
                 l_m.append(m); l_b.append(y_b)
 
     # 초기화
     rx, lx = 0.0, 0.0
     r_cross, l_cross = 0, 0
     
-    # --- 오른쪽 라인 계산 ---
+    
+    # ==================================================
+    # 4-1. 오른쪽 라인 처리 (감지 및 홀드)
+    # ==================================================
     if len(r_m) > 0 and len(r_m) < 8:
+        # 🌟 감지 성공: 현재 값 사용 및 last 변수 업데이트
         avg_m = np.mean(r_m)
         avg_y_b = np.mean(r_b)
-        
+        last_r_m, last_r_b = r_m.copy(), r_b.copy()
+
         if avg_m != 0: 
             r_cross = int((y_line_roi - avg_y_b) / avg_m)
-            er = r_cross - 320
+            er = r_cross - 320 # 0 ~ 320: 왼쪽으로 치우침 (음수), 320 ~ 640: 오른쪽으로 치우침 (양수)
             rx = float(er/1000)
 
-            # 시각화
+            # 시각화 (빨간색)
             x_start = int((0 - avg_y_b) / avg_m)
             x_end = int((y_end_roi - avg_y_b) / avg_m)
-            
-            center_x_r = int((x_start + x_end) / 2)
-            center_y_r = int((0 + y_end_roi) / 2)
             cv2.line(line_draw, (x_start, 0), (x_end, y_end_roi), (255, 0, 0), 5)
-            cv2.circle(line_draw, (center_x_r, center_y_r), 10, (255, 0, 0), -1)
     else:
-        rx = 0.0
-        r_crosss = 0
-        
-                  
-    
-    # --- 왼쪽 라인 계산 ---
+        # 🌟 감지 실패: 직전 값(last_r_m, last_r_b) 재활용 (홀드)
+        if len(last_r_m) > 0:
+            avg_m = np.mean(last_r_m)
+            avg_y_b = np.mean(last_r_b)
+            if avg_m != 0:
+                r_cross = int((y_line_roi - avg_y_b) / avg_m)
+                er = r_cross - 320
+                rx = float(er/1000)
+                # 시각화 (홀드: 마젠타)
+                x_start = int((0 - avg_y_b) / avg_m)
+                x_end = int((y_end_roi - avg_y_b) / avg_m)
+                cv2.line(line_draw, (x_start, 0), (x_end, y_end_roi), (255, 0, 255), 5)
+
+
+    # ==================================================
+    # 4-2. 왼쪽 라인 처리 (감지 및 홀드)
+    # ==================================================
     if len(l_m) > 0 and len(l_m) < 8: 
+        # 🌟 감지 성공: 현재 값 사용 및 last 변수 업데이트
         avg_m = np.mean(l_m)
         avg_y_b = np.mean(l_b)
+        last_l_m, last_l_b = l_m.copy(), l_b.copy()
       
         if avg_m != 0:
             l_cross = int((y_line_roi - avg_y_b) / avg_m)
             er = l_cross - 320
             lx = float(er/1000)
-            
-            # 시각화
+
+            # 시각화 (초록색)
             x_start = int((0 - avg_y_b) / avg_m)
             x_end = int((y_end_roi - avg_y_b) / avg_m)
-
-            center_x_l = int((x_start + x_end) / 2)
-            center_y_l = int((0 + y_end_roi) / 2)
-
             cv2.line(line_draw, (x_start, 0), (x_end, y_end_roi), (0, 255, 0), 5)
-            cv2.circle(line_draw, (center_x_l, center_y_l), 10, (255, 0, 0), -1)
     else:
-        lx = 0.0
-        l_crosss = 0        
+        # 🌟 감지 실패: 직전 값(last_l_m, last_l_b) 재활용 (홀드)
+        if len(last_l_m) > 0:
+            avg_m = np.mean(last_l_m)
+            avg_y_b = np.mean(last_l_b)
+            if avg_m != 0:
+                l_cross = int((y_line_roi - avg_y_b) / avg_m)
+                er = l_cross - 320
+                lx = float(er/1000)
+                # 시각화 (홀드: 노란색)
+                x_start = int((0 - avg_y_b) / avg_m)
+                x_end = int((y_end_roi - avg_y_b) / avg_m)
+                cv2.line(line_draw, (x_start, 0), (x_end, y_end_roi), (0, 255, 255), 5)
+
     
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 (곡선 대응)
+    # 5. 최종 조향 결정 로직 (논리 오류 수정 및 통합)
     # ------------------------------------------------
-    final_last_steering = 0.0
-  
-    if r_cross != 0 and l_cross != 0:
-        final_steering = -(rx+lx) / 2
+    final_steering = 0.0
+    lines_detected_both = (r_cross != 0 and l_cross != 0)
+    
+    if lines_detected_both:
+        # 1. 양쪽 차선 감지 시: 중앙값 사용 (안정적)
+        # 에러 값: rx(양수=우편향), lx(음수=좌편향)
+        # 최종 조향값: (rx + lx)의 평균. 부호 반전(-)은 필요에 따라 조절.
+        final_steering = -(rx + lx) / 2
+        
     elif l_cross != 0:
-        final__steering = -lx *2.5
+        # 2. 왼쪽 차선만 감지 시: 왼쪽 차선 중앙을 따라가기 위해 오른쪽으로 밀어줘야 함
+        # lx는 보통 음수이므로, -lx * Gain은 양수(우회전)를 만듭니다.
+        final_steering = -lx * 1.5 
+        
     elif r_cross != 0:
-        final_steering = -rx *2.5
+        # 3. 오른쪽 차선만 감지 시: 오른쪽 차선 중앙을 따라가기 위해 왼쪽으로 밀어줘야 함
+        # rx는 보통 양수이므로, -rx * Gain은 음수(좌회전)를 만듭니다.
+        final_steering = -rx * 1.5 
+        
     else:
+        # 4. 차선 미감지 시: 직전 조향값 유지
         final_steering = last_steering
-
-    # if r_cross == 0 and l_cross !=0:
-    #     final__steering = lx * 1.5
-    # if r_cross !=0 and l_cross == 0:
-    #     final__steering = rx * 1.5    
-
+        
     # ------------------------------------------------
     # 6. 모터 제어 실행
     # ------------------------------------------------
@@ -162,19 +193,21 @@ while cap.isOpened():
     if -1.0 <= steering <= 1.0:
         servo.value = steering
         motor.forward(0.7)
-        last_steering = steering
+        last_steering = steering # 🌟 성공적인 조향값만 업데이트
     else:
         motor.stop()
+        print("Steering Value Out of Range. Motor Stop.")
 
     # ------------------------------------------------
     # 7. 화면 출력
     # ------------------------------------------------
+    cv2.line(line_draw, (320, 0), (320, y_end_roi), (255, 255, 255), 1) # 중앙선 표시
     cv2.imshow("Lane View", line_draw)
     
-    # 'q' 키를 누르면 while 루프 종료
     if cv2.waitKey(1) == ord('q'):
         break
 
-# [수정됨] 루프 종료 후 단순 리소스 해제
+# 루프 종료 후 리소스 해제
+motor.stop()
 cap.release() 
 cv2.destroyAllWindows()
