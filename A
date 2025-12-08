@@ -58,7 +58,7 @@ while cap.isOpened():
     blur = cv2.GaussianBlur(roi_gray, (5, 5), 0)
     edges = cv2.Canny(blur, 50, 150)
 
-    # 🌟 [수정] HoughLinesP threshold를 10에서 8로 낮춰 민감도 증가 (곡선 인식률 향상)
+    # HoughLinesP threshold=8 유지 (곡선 인식률 향상)
     lines = cv2.HoughLinesP(edges, 
                             rho=1, 
                             theta=np.pi/180, 
@@ -161,7 +161,7 @@ while cap.isOpened():
 
     
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 
+    # 5. 최종 조향 결정 로직 (🌟 곡선 탈출 안정화 로직 적용)
     # ------------------------------------------------
     final_steering = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
@@ -171,22 +171,23 @@ while cap.isOpened():
         final_steering = -(rx + lx) / 2
         
     elif l_cross != 0:
-        # 2. 왼쪽 차선만 감지 시: 🌟 [수정] Gain 1.8을 2.0으로 복구 (차선 중앙 복귀 속도 향상)
-        final_steering = -lx * 2.0 
+        # 2. 왼쪽 차선만 감지 시: 🌟 [수정] Gain 1.7로 하향 (왼쪽으로 덜 꺾이도록 유도)
+        final_steering = -lx * 1.7 
         
     elif r_cross != 0:
-        # 3. 오른쪽 차선만 감지 시: 🌟 [수정] Gain 1.8을 2.0으로 복구 (차선 중앙 복귀 속도 향상)
+        # 3. 오른쪽 차선만 감지 시: Gain 2.0 유지 (오른쪽 차선 복귀 속도 유지)
         final_steering = -rx * 2.0
         
     else:
-        # 4. 차선 미감지 시: 직전 조향값 유지
-        final_steering = last_steering
+        # 4. 차선 미감지 시: 🌟 [수정] last_steering 대신 안전한 중앙값(Offset) 사용
+        #    이전의 큰 조향값 유지를 막아 곡선 탈출 후 안정화 유도
+        final_steering = 0.0 # 일단 조향 오차 0으로 초기화
         
-    # 직선 주행 시 왼쪽 쏠림을 보정하기 위해 Offset 0.20 추가 (최대 보정 유지)
+    # 직선 쏠림 보정 (항상 적용)
     final_steering += STEERING_OFFSET
         
     # ------------------------------------------------
-    # 6. 모터 제어 실행
+    # 6. 모터 제어 실행 (🌟 last_steering 업데이트 로직 강화)
     # ------------------------------------------------
     
     if abs(final_steering) > MAX_STEERING:
@@ -197,7 +198,17 @@ while cap.isOpened():
     if -1.0 <= steering <= 1.0:
         servo.value = steering
         motor.forward(0.7)
-        last_steering = steering
+        
+        # 🌟 [수정] last_steering은 오직 차선이 감지되었을 때만 업데이트
+        #    차선이 미감지된 상황에서는 불안정한 조향값을 last_steering에 저장하지 않음.
+        if lines_detected_both or l_cross != 0 or r_cross != 0:
+            last_steering = steering
+            
+        # 💡 [추가 로직] 만약 최종 조향값이 STEERING_OFFSET과 비슷하다면(직선 주행 시),
+        #    last_steering을 0.0으로 초기화하여 다음 미감지 상황에 대비할 수도 있음.
+        # if abs(steering - STEERING_OFFSET) < 0.05:
+        #     last_steering = STEERING_OFFSET
+
     else:
         motor.stop()
         print("Steering Value Out of Range. Motor Stop.")
