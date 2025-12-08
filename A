@@ -17,7 +17,7 @@ cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-# [최종 수정 1] STEERING_OFFSET 최대 강화: 0.15 -> 0.20 (왼쪽 쏠림을 상쇄하기 위한 최대 보정값)
+# [유지] STEERING_OFFSET 최대 강화: 0.20 (왼쪽 쏠림 상쇄)
 STEERING_OFFSET = 0.20
 last_steering = STEERING_OFFSET 
 
@@ -25,11 +25,11 @@ MAX_STEERING = 0.42
 
 # [유지] Lookahead 제거: 0
 STEERING_LOOKAHEAD_PIXELS = 0 
-# [최종 수정 2] 스무딩 극대화: 0.3 -> 0.15 (직전 조향값의 영향력을 85%로 극대화하여 직진성 강화)
+# [유지] 스무딩 극대화: 0.15 (직전 조향값 영향력 85%로 직진성 강화)
 STEERING_SMOOTHING_ALPHA = 0.15 
 
-# [유지] P_GAIN_STRAIGHT: 0.40 (직선 복원력 대폭 강화)
-P_GAIN_STRAIGHT = 0.40
+# [최종 수정 3] P_GAIN_STRAIGHT 최대치 적용: 0.40 -> 0.60 (직선 복원력 최대로 강화)
+P_GAIN_STRAIGHT = 0.60
 
 print("System Ready. Start Driving...")
 
@@ -47,13 +47,12 @@ while cap.isOpened():
     height, width = frame.shape[:2]
     CENTER_X = width // 2  # 320
     
-    # [유지] ROI 시작점: 0.70 (시야를 하단 30%로 소폭 확대)
-    roi_y_start = int(height * 0.70) 
+    # [최종 수정 4] ROI 시작점 조정: 0.70 -> 0.65 (시야를 하단 35%로 미세 확대)
+    roi_y_start = int(height * 0.65) 
     roi_y_end = height 
     roi = frame[roi_y_start:roi_y_end, 0:width]
     line_draw = np.copy(roi)
     
-    # Lookahead가 0이므로, 조향 기준선은 ROI의 맨 아래(y_end_roi)에 위치
     y_line_roi = (height - STEERING_LOOKAHEAD_PIXELS) - roi_y_start 
     y_end_roi = height - roi_y_start
 
@@ -61,10 +60,11 @@ while cap.isOpened():
     blur = cv2.GaussianBlur(roi_gray, (5, 5), 0)
     
     edges = cv2.Canny(blur, 50, 150)
+    # [최종 수정 5] HoughLinesP Threshold 강화: 7 -> 10 (노이즈 줄여 정확한 차선만 검출)
     lines = cv2.HoughLinesP(edges, 
                             rho=1, 
                             theta=np.pi/180, 
-                            threshold=7, 
+                            threshold=10, 
                             minLineLength=3, 
                             maxLineGap=20)
     
@@ -75,8 +75,8 @@ while cap.isOpened():
     l_b, r_b = [], []
     
     # [유지] 차선 인식 범위 좁히기: +/- 30
-    RIGHT_LANE_X_MIN = CENTER_X - 30 # 290
-    LEFT_LANE_X_MAX = CENTER_X + 30  # 350
+    RIGHT_LANE_X_MIN = CENTER_X - 30 
+    LEFT_LANE_X_MAX = CENTER_X + 30 
     
     if lines is not None:
         for line in lines:
@@ -116,7 +116,7 @@ while cap.isOpened():
             cv2.line(line_draw, (l_cross, y_line_roi), (x_end_vis, y_end_roi), (0, 255, 0), 3)
 
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 (직진 복원력 최대화 및 쏠림 보정)
+    # 5. 최종 조향 결정 로직 
     # ------------------------------------------------
     
     P_term = 0.0
@@ -124,7 +124,7 @@ while cap.isOpened():
     lines_detected_any = (r_cross != 0 or l_cross != 0)
     
     if lines_detected_both:
-        # 🌟 직선 주행 (P 제어): 복원력 P_GAIN_STRAIGHT(0.40) 적용
+        # 🌟 직선 주행 (P 제어): P_GAIN_STRAIGHT(0.60) 적용 -> 최대 복원력
         current_error = -(rx + lx) / 2
         P_term = current_error * P_GAIN_STRAIGHT
         
@@ -145,7 +145,7 @@ while cap.isOpened():
     unoffseted_steering = P_term
     final_steering = unoffseted_steering 
         
-    # [핵심] 직선 쏠림 보정 적용 (0.20으로 최대 강화)
+    # [핵심] 직선 쏠림 보정 적용 (0.20)
     final_steering += STEERING_OFFSET
         
     # EMA Smoothing 적용 (직전 조향값 영향력 85%로 극대화)
@@ -170,7 +170,6 @@ while cap.isOpened():
         last_steering = steering
         
         # 직진 상태 근처일 때 last_steering 초기화
-        # 오프셋이 0.20으로 커졌으므로 초기화 범위도 0.15로 확대
         if abs(steering - STEERING_OFFSET) < 0.15:
             last_steering = STEERING_OFFSET
 
