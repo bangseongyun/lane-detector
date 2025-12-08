@@ -23,10 +23,11 @@ last_steering = STEERING_OFFSET
 
 MAX_STEERING = 0.42
 
-# [최종 수정 1] Lookahead 제거: 50 -> 0
-# Lookahead를 0으로 설정하여 현재 프레임의 가장 아래쪽(차량 코앞)만 참조합니다.
+# [유지] Lookahead 제거: 0
 STEERING_LOOKAHEAD_PIXELS = 0 
-STEERING_SMOOTHING_ALPHA = 0.5 
+# [수정 1] 스무딩 강화: 0.5 -> 0.4
+# 급격한 조향 변화를 더욱 억제하여 직진성을 강화합니다.
+STEERING_SMOOTHING_ALPHA = 0.4 
 
 print("System Ready. Start Driving...")
 
@@ -44,14 +45,14 @@ while cap.isOpened():
     height, width = frame.shape[:2]
     CENTER_X = width // 2  # 320
     
-    # [최종 수정 2] ROI 시작점 조정: 0.50 -> 0.70 (시야를 코앞으로 극한 축소)
-    # 이미지의 하단 30%만 사용합니다.
-    roi_y_start = int(height * 0.70) 
+    # [최종 수정 2] ROI 시작점 조정: 0.70 -> 0.75 (시야를 차량 발밑으로 극한 축소)
+    # 이미지의 하단 25%만 사용합니다.
+    roi_y_start = int(height * 0.75) 
     roi_y_end = height 
     roi = frame[roi_y_start:roi_y_end, 0:width]
     line_draw = np.copy(roi)
     
-    # Lookahead가 0이므로, y_line_roi는 항상 ROI의 맨 아래(y_end_roi)와 가까워집니다.
+    # Lookahead가 0이므로, 조향 기준선은 ROI의 맨 아래(y_end_roi)에 위치
     y_line_roi = (height - STEERING_LOOKAHEAD_PIXELS) - roi_y_start 
     y_end_roi = height - roi_y_start
 
@@ -72,6 +73,7 @@ while cap.isOpened():
     l_m, r_m = [], []
     l_b, r_b = [], []
     
+    # 차선 인식 기준은 그대로 유지
     RIGHT_LANE_X_MIN = CENTER_X - 50
     LEFT_LANE_X_MAX = CENTER_X + 50
     
@@ -112,15 +114,16 @@ while cap.isOpened():
             cv2.line(line_draw, (l_cross, y_line_roi), (x_end_vis, y_end_roi), (0, 255, 0), 3)
 
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 (Gain 유지, Lookahead 0)
+    # 5. 최종 조향 결정 로직 (직진 강제 강화)
     # ------------------------------------------------
     final_steering = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
     lines_detected_any = (r_cross != 0 or l_cross != 0)
     
     if lines_detected_both:
-        # 🌟 직선 주행: 두 차선 중앙 강제
-        final_steering = -(rx + lx) / 2
+        # [최종 수정 3] 직선 강제 Gain 추가 둔화: /2 -> /3
+        # 중앙값을 따르되, 훨씬 느리게 반응하여 직진성을 극대화
+        final_steering = -(rx + lx) / 3 
         
     elif l_cross != 0:
         # 🌟 곡선 주행: 왼쪽 차선 추종 (Gain 0.6 유지)
@@ -137,7 +140,7 @@ while cap.isOpened():
     # [핵심] 직선 쏠림 보정 적용 (0.15)
     final_steering += STEERING_OFFSET
         
-    # EMA Smoothing 적용 (부드러운 조향 변화)
+    # EMA Smoothing 적용 (부드러운 조향 변화, 알파값 0.4로 강화)
     final_steering = (final_steering * STEERING_SMOOTHING_ALPHA) + \
                      (last_steering * (1 - STEERING_SMOOTHING_ALPHA))
         
@@ -153,7 +156,7 @@ while cap.isOpened():
 
     if -1.0 <= steering <= 1.0:
         servo.value = steering
-        # [최종 수정 3] 모터 속도 감소: 0.7 -> 0.6
+        # [유지] 모터 속도: 0.6
         motor.forward(0.6)
         
         last_steering = steering
@@ -170,7 +173,6 @@ while cap.isOpened():
     # 7. 화면 출력 (디버깅)
     # ------------------------------------------------
     target_x = 320
-    # Lookahead가 0이므로, target_x는 y_line_roi(ROI 맨 아래 근처)에서 계산됩니다.
     if l_cross != 0 and r_cross != 0: target_x = (l_cross + r_cross) // 2
     elif l_cross != 0: target_x = l_cross + 175 
     elif r_cross != 0: target_x = r_cross - 175
