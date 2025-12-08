@@ -85,16 +85,15 @@ while cap.isOpened():
     r_cross, l_cross = 0, 0
     
     # --- 오른쪽 라인 계산 ---
-    if len(r_m) > 0 and len(r_m) <75:
+    if len(r_m) > 0 and len(r_m) < 8:
         avg_m = np.mean(r_m)
         avg_y_b = np.mean(r_b)
-        lart_r_m =r_m.copy()
-        lart_r_b = r_b.copy()
+        
         if avg_m != 0: 
             r_cross = int((y_line_roi - avg_y_b) / avg_m)
             er = r_cross - 320
             rx = float(er/1000)
-        
+
             # 시각화
             x_start = int((0 - avg_y_b) / avg_m)
             x_end = int((y_end_roi - avg_y_b) / avg_m)
@@ -103,29 +102,17 @@ while cap.isOpened():
             center_y_r = int((0 + y_end_roi) / 2)
             cv2.line(line_draw, (x_start, 0), (x_end, y_end_roi), (255, 0, 0), 5)
             cv2.circle(line_draw, (center_x_r, center_y_r), 10, (255, 0, 0), -1)
-    elif len(r_m) > 0:
-        avg_m = np.mean(lart_r_m)
-        avg_y_b = np.mean(lart_r_b)
+    else:
+        rx = 0.0
+        r_crosss = 0
         
-        if avg_m != 0: 
-            r_cross = int((y_line_roi - avg_y_b) / avg_m)
-            er = r_cross - 320
-            rx = float(er/1000)
-        
-            # 시각화
-            x_start = int((0 - avg_y_b) / avg_m)
-            x_end = int((y_end_roi - avg_y_b) / avg_m)
-            
-            center_x_r = int((x_start + x_end) / 2)
-            center_y_r = int((0 + y_end_roi) / 2)
-            cv2.line(line_draw, (x_start, 0), (x_end, y_end_roi), (255, 0, 0), 5)
-            cv2.circle(line_draw, (center_x_r, center_y_r), 10, (255, 0, 0), -1)
+                  
+    
     # --- 왼쪽 라인 계산 ---
-    if len(l_m) > 0 and len(l_m) < 75:  
+    if len(l_m) > 0 and len(l_m) < 8: 
         avg_m = np.mean(l_m)
         avg_y_b = np.mean(l_b)
-        lart_l_m =l_m.copy()
-        lart_l_b = l_b.copy()
+      
         if avg_m != 0:
             l_cross = int((y_line_roi - avg_y_b) / avg_m)
             er = l_cross - 320
@@ -140,52 +127,28 @@ while cap.isOpened():
 
             cv2.line(line_draw, (x_start, 0), (x_end, y_end_roi), (0, 255, 0), 5)
             cv2.circle(line_draw, (center_x_l, center_y_l), 10, (255, 0, 0), -1)
-    elif len(l_m) > 0  :
-        avg_m = np.mean(lart_l_m)
-        avg_y_b = np.mean(lart_l_b)
-        
-        if avg_m != 0: 
-            l_cross = int((y_line_roi - avg_y_b) / avg_m)
-            er = l_cross - 320
-            lx = float(er/1000)
-        
-            # 시각화
-            x_start = int((0 - avg_y_b) / avg_m)
-            x_end = int((y_end_roi - avg_y_b) / avg_m)
-            
-            center_x_l = int((x_start + x_end) / 2)
-            center_y_l = int((0 + y_end_roi) / 2)
-            cv2.line(line_draw, (x_start, 0), (x_end, y_end_roi), (255, 0, 0), 5)
-            cv2.circle(line_draw, (center_x_r, center_y_r), 10, (255, 0, 0), -1)
-
+    else:
+        lx = 0.0
+        l_crosss = 0        
+    
     # ------------------------------------------------
     # 5. 최종 조향 결정 로직 (곡선 대응)
     # ------------------------------------------------
-    final_steering = 0.0
-    
-    lines_detected_both = (r_cross != 0 and l_cross != 0)
-    lines_are_crossing = (lines_detected_both and l_cross >= r_cross)
-    
-    if lines_are_crossing:
-        # 곡선: 바깥쪽 차선 추종
-        mid_point = (l_cross + r_cross) / 2
-        
-        if mid_point < 320:
-            final_steering = rx # 왼쪽 커브 -> 오른쪽 라인 따라감
-        else:
-            final_steering = lx # 오른쪽 커브 -> 왼쪽 라인 따라감
-
-    elif lines_detected_both:
-        final_steering = (rx + lx) / 2 # 직선 -> 중앙
-
-    elif r_cross != 0:
-        final_steering = rx
-
+    final_last_steering = 0.0
+  
+    if r_cross != 0 and l_cross != 0:
+        final_steering = -(rx+lx) / 2
     elif l_cross != 0:
-        final_steering = lx
-
+        final__steering = -lx *2.5
+    elif r_cross != 0:
+        final_steering = -rx *2.5
     else:
         final_steering = last_steering
+
+    # if r_cross == 0 and l_cross !=0:
+    #     final__steering = lx * 1.5
+    # if r_cross !=0 and l_cross == 0:
+    #     final__steering = rx * 1.5    
 
     # ------------------------------------------------
     # 6. 모터 제어 실행
