@@ -51,7 +51,7 @@ while cap.isOpened():
     y_line_roi = (height - 120) - roi_y_start
     y_end_roi = height - roi_y_start
 
-    # Canny 파라미터 조정 (Blur 커널 크기 11->5)
+    # Canny 파라미터 조정
     roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(roi_gray, (5, 5), 0)
     edges = cv2.Canny(blur, 50, 150)
@@ -76,12 +76,12 @@ while cap.isOpened():
             m = (y2 - y1) / (x2 - x1) 
             y_b = y1 - m * x1 
             
-            mid_x = (x1 + x2) / 2 # X 좌표 필터링 추가
+            mid_x = (x1 + x2) / 2
             
             # 기울기와 위치로 좌우 구분
-            if m > 0.1 and mid_x > CENTER_X: # 오른쪽 차선: 기울기 양수, 화면 중앙보다 오른쪽
+            if m > 0.1 and mid_x > CENTER_X: # 오른쪽 차선
                 r_m.append(m); r_b.append(y_b)
-            elif m < -0.1 and mid_x < CENTER_X: # 왼쪽 차선: 기울기 음수, 화면 중앙보다 왼쪽
+            elif m < -0.1 and mid_x < CENTER_X: # 왼쪽 차선
                 l_m.append(m); l_b.append(y_b)
 
     # 초기화
@@ -100,22 +100,24 @@ while cap.isOpened():
 
         if avg_m != 0: 
             r_cross = int((y_line_roi - avg_y_b) / avg_m)
-            er = r_cross - 320 # 0 ~ 320: 왼쪽으로 치우침 (음수), 320 ~ 640: 오른쪽으로 치우침 (양수)
-            rx = float(er/1000)
+            er = r_cross - 320 
+            # 🌟 [수정 1] 비례 상수를 1000에서 400으로 줄여 민감도 높임
+            rx = float(er/400) 
 
             # 시각화 (빨간색)
             x_start = int((0 - avg_y_b) / avg_m)
             x_end = int((y_end_roi - avg_y_b) / avg_m)
             cv2.line(line_draw, (x_start, 0), (x_end, y_end_roi), (255, 0, 0), 5)
     else:
-        # 🌟 감지 실패: 직전 값(last_r_m, last_r_b) 재활용 (홀드)
+        # 🌟 감지 실패: 직전 값 재활용 (홀드)
         if len(last_r_m) > 0:
             avg_m = np.mean(last_r_m)
             avg_y_b = np.mean(last_r_b)
             if avg_m != 0:
                 r_cross = int((y_line_roi - avg_y_b) / avg_m)
                 er = r_cross - 320
-                rx = float(er/1000)
+                # 🌟 [수정 1] 비례 상수를 1000에서 400으로 줄여 민감도 높임
+                rx = float(er/400) 
                 # 시각화 (홀드: 마젠타)
                 x_start = int((0 - avg_y_b) / avg_m)
                 x_end = int((y_end_roi - avg_y_b) / avg_m)
@@ -134,21 +136,23 @@ while cap.isOpened():
         if avg_m != 0:
             l_cross = int((y_line_roi - avg_y_b) / avg_m)
             er = l_cross - 320
-            lx = float(er/1000)
+            # 🌟 [수정 1] 비례 상수를 1000에서 400으로 줄여 민감도 높임
+            lx = float(er/400)
 
             # 시각화 (초록색)
             x_start = int((0 - avg_y_b) / avg_m)
             x_end = int((y_end_roi - avg_y_b) / avg_m)
             cv2.line(line_draw, (x_start, 0), (x_end, y_end_roi), (0, 255, 0), 5)
     else:
-        # 🌟 감지 실패: 직전 값(last_l_m, last_l_b) 재활용 (홀드)
+        # 🌟 감지 실패: 직전 값 재활용 (홀드)
         if len(last_l_m) > 0:
             avg_m = np.mean(last_l_m)
             avg_y_b = np.mean(last_l_b)
             if avg_m != 0:
                 l_cross = int((y_line_roi - avg_y_b) / avg_m)
                 er = l_cross - 320
-                lx = float(er/1000)
+                # 🌟 [수정 1] 비례 상수를 1000에서 400으로 줄여 민감도 높임
+                lx = float(er/400)
                 # 시각화 (홀드: 노란색)
                 x_start = int((0 - avg_y_b) / avg_m)
                 x_end = int((y_end_roi - avg_y_b) / avg_m)
@@ -156,26 +160,22 @@ while cap.isOpened():
 
     
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 (논리 오류 수정 및 통합)
+    # 5. 최종 조향 결정 로직 (곡선 이득 강화)
     # ------------------------------------------------
     final_steering = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
     
     if lines_detected_both:
         # 1. 양쪽 차선 감지 시: 중앙값 사용 (안정적)
-        # 에러 값: rx(양수=우편향), lx(음수=좌편향)
-        # 최종 조향값: (rx + lx)의 평균. 부호 반전(-)은 필요에 따라 조절.
         final_steering = -(rx + lx) / 2
         
     elif l_cross != 0:
-        # 2. 왼쪽 차선만 감지 시: 왼쪽 차선 중앙을 따라가기 위해 오른쪽으로 밀어줘야 함
-        # lx는 보통 음수이므로, -lx * Gain은 양수(우회전)를 만듭니다.
-        final_steering = -lx * 1.5 
+        # 2. 왼쪽 차선만 감지 시: 🌟 [수정 2] 조향 이득을 1.5에서 2.0으로 높임
+        final_steering = -lx * 2.0 
         
     elif r_cross != 0:
-        # 3. 오른쪽 차선만 감지 시: 오른쪽 차선 중앙을 따라가기 위해 왼쪽으로 밀어줘야 함
-        # rx는 보통 양수이므로, -rx * Gain은 음수(좌회전)를 만듭니다.
-        final_steering = -rx * 1.5 
+        # 3. 오른쪽 차선만 감지 시: 🌟 [수정 2] 조향 이득을 1.5에서 2.0으로 높임
+        final_steering = -rx * 2.0
         
     else:
         # 4. 차선 미감지 시: 직전 조향값 유지
@@ -193,7 +193,7 @@ while cap.isOpened():
     if -1.0 <= steering <= 1.0:
         servo.value = steering
         motor.forward(0.7)
-        last_steering = steering # 🌟 성공적인 조향값만 업데이트
+        last_steering = steering
     else:
         motor.stop()
         print("Steering Value Out of Range. Motor Stop.")
