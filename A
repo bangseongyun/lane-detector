@@ -25,9 +25,12 @@ MAX_STEERING = 0.42
 # 직선 쏠림 보정 (0.25 유지)
 STEERING_OFFSET = 0.25
 
-# [추가] EMA Smoothing Factor: 값이 높을수록 변화에 빠르게 반응하고, 낮을수록 부드럽게 지연됩니다.
-# 0.7: 새 조향값 70% + 직전 조향값 30% 반영
-STEERING_SMOOTHING_ALPHA = 0.7
+# [수정 1] Lookahead 설정: 조향 기준선을 하단에서 180픽셀 위로 설정 (더 멀리 보게 함)
+STEERING_LOOKAHEAD_PIXELS = 180
+
+# [수정 2] EMA Smoothing Factor: 0.7 -> 0.5 (최대 부드러움 적용)
+# 0.5: 새 조향값 50% + 직전 조향값 50% 반영 -> 조향 변화 속도를 가장 늦춤
+STEERING_SMOOTHING_ALPHA = 0.5
 
 print("System Ready. Start Driving...")
 motor.forward(0.7)
@@ -51,7 +54,8 @@ while cap.isOpened():
     roi = frame[roi_y_start:roi_y_end, 0:width]
     line_draw = np.copy(roi)
     
-    y_line_roi = (height - 100) - roi_y_start 
+    # [수정 3] 조향 기준선 변경: 더 멀리(180px) 앞을 보고 조향하도록 변경
+    y_line_roi = (height - STEERING_LOOKAHEAD_PIXELS) - roi_y_start 
     y_end_roi = height - roi_y_start
 
     roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
@@ -113,35 +117,34 @@ while cap.isOpened():
             cv2.line(line_draw, (l_cross, y_line_roi), (x_end_vis, y_end_roi), (0, 255, 0), 3)
 
     # ------------------------------------------------
-    # 5. 최종 조향 결정 로직 (🌟 Gain 복구 및 Smoothing 적용)
+    # 5. 최종 조향 결정 로직 (🌟 Slow Turning Gain 적용 및 Smoothing 강화)
     # ------------------------------------------------
     final_steering = 0.0
     lines_detected_both = (r_cross != 0 and l_cross != 0)
     lines_detected_any = (r_cross != 0 or l_cross != 0)
     
     if lines_detected_both:
-        # 양쪽 감지: 중앙값 사용 (유지)
+        # 양쪽 감지: 두 차선의 평균을 사용한 중앙 주행 (직선 안정화)
         final_steering = -(rx + lx) / 2
         
     elif l_cross != 0:
-        # [수정 1] Gain 복구: 0.9 -> 1.2 (직선 안정화 위해 보정력 강화)
-        final_steering = -lx * 1.2 
+        # [수정 4] 왼쪽 차선만 감지: Gain 1.2 -> 0.8 (매우 느린 반응)
+        final_steering = -lx * 0.8 
         
     elif r_cross != 0:
-        # [수정 2] Gain 복구: 1.1 -> 1.4 (직선 안정화 위해 보정력 강화)
-        final_steering = -rx * 1.4
+        # [수정 5] 오른쪽 차선만 감지: Gain 1.4 -> 1.0 (느린 반응)
+        final_steering = -rx * 1.0
         
     else:
         # 차선 미감지 시: 직전 조향값 유지 (관성 주행)
         final_steering = last_steering
         
-    # [수정 3] EMA Smoothing 적용: 라인 감지 시에만 부드러운 변화를 적용
-    if lines_detected_any:
-        final_steering = (final_steering * STEERING_SMOOTHING_ALPHA) + \
-                         (last_steering * (1 - STEERING_SMOOTHING_ALPHA))
-        
-    # 직선 쏠림 보정 적용 (유지)
+    # 직선 쏠림 보정 적용
     final_steering += STEERING_OFFSET
+        
+    # [수정 6] EMA Smoothing 적용: 계산된 최종 목표 조향값을 부드럽게 실제 조향값에 반영
+    final_steering = (final_steering * STEERING_SMOOTHING_ALPHA) + \
+                     (last_steering * (1 - STEERING_SMOOTHING_ALPHA))
         
     # ------------------------------------------------
     # 6. 모터 제어 실행 
@@ -157,8 +160,7 @@ while cap.isOpened():
         servo.value = steering
         motor.forward(0.7)
         
-        # last_steering 업데이트
-        # smoothing을 위해 lines_detected_any와 관계없이 업데이트합니다.
+        # last_steering 업데이트 (다음 프레임의 smoothing에 사용될 실제 조향값)
         last_steering = steering
         
         # 직선 주행(오프셋 근처) 시 last_steering 초기화
@@ -172,6 +174,7 @@ while cap.isOpened():
     # ------------------------------------------------
     # 7. 화면 출력 (디버깅)
     # ------------------------------------------------
+    # 목표 지점도 Lookahead 180px 기준으로 계산해야 함
     target_x = 320
     if l_cross != 0 and r_cross != 0: target_x = (l_cross + r_cross) // 2
     elif l_cross != 0: target_x = l_cross + 175
